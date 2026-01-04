@@ -8,8 +8,11 @@ API_URL = "http://127.0.0.1:8001"
 st.set_page_config(page_title="Month-End Auditor | PS04", page_icon="🛡️", layout="wide")
 st.markdown("""<style>.stApp { background-color: #0e1117; color: #FFFFFF; }</style>""", unsafe_allow_html=True)
 
+# --- UPDATED TITLE WITH ML BADGE ---
 st.title("🛡️ AI Financial Auditor")
 st.markdown("### Month-End Close Exception Finder")
+st.caption("Powered by: **Hybrid Ensemble (Z-Score + Isolation Forest) & Google Gemini**")
+# -----------------------------------
 
 # Session State for Report
 if "report_summary" not in st.session_state:
@@ -17,7 +20,7 @@ if "report_summary" not in st.session_state:
 if "report_pdf" not in st.session_state:
     st.session_state["report_pdf"] = None
 
-# Clear button clears everything including report
+# Clear button
 if st.sidebar.button("🧹 Clear/Reset App"):
     st.session_state["data"] = None
     st.session_state["report_summary"] = ""
@@ -31,14 +34,14 @@ st.sidebar.header("Audit Controls")
 
 # Mode 1: Synthetic
 if st.sidebar.button("🚀 Generate & Scan Synthetic Ledger"):
-    with st.spinner("Scanning..."):
+    with st.spinner("Running Ensemble Model (Stats + ML)..."):
         try:
             res = requests.get(f"{API_URL}/scan?use_fake=true&use_llm=true")
             if res.status_code == 200:
                 st.session_state["data"] = pd.DataFrame(res.json())
-                st.session_state["report_summary"] = ""  # Reset report on new scan
+                st.session_state["report_summary"] = ""
                 st.session_state["report_pdf"] = None
-                st.success("Scan Complete")
+                st.success("Analysis Complete")
             else:
                 st.error(f"Error: {res.text}")
         except Exception as e:
@@ -48,7 +51,7 @@ if st.sidebar.button("🚀 Generate & Scan Synthetic Ledger"):
 uploaded = st.sidebar.file_uploader("Upload GL Export (CSV)")
 if uploaded:
     if st.sidebar.button("Scan Uploaded File"):
-        with st.spinner("Scanning..."):
+        with st.spinner("Running Ensemble Model..."):
             files = {"file": uploaded}
             try:
                 res = requests.post(f"{API_URL}/scan?use_llm=true", files=files)
@@ -56,7 +59,7 @@ if uploaded:
                     st.session_state["data"] = pd.DataFrame(res.json())
                     st.session_state["report_summary"] = ""
                     st.session_state["report_pdf"] = None
-                    st.success("Scan Complete")
+                    st.success("Analysis Complete")
             except Exception as e:
                 st.error(f"Connection Failed: {e}")
 
@@ -75,7 +78,7 @@ if st.session_state["data"] is not None:
 
     st.divider()
 
-    # --- NEW: REPORT GENERATION SECTION ---
+    # Report Gen
     st.subheader("📄 Audit Reporting")
     col_gen, col_preview = st.columns([1, 3])
 
@@ -83,7 +86,6 @@ if st.session_state["data"] is not None:
         if st.button("📝 Draft Audit Report"):
             with st.spinner("Consulting AI & Generating PDF..."):
                 try:
-                    # Send FULL dataframe (backend handles filtering)
                     payload = {"data": df.to_dict(orient="records")}
                     res = requests.post(f"{API_URL}/generate_report", json=payload)
 
@@ -96,7 +98,6 @@ if st.session_state["data"] is not None:
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-    # Display Preview & Download if available
     if st.session_state["report_summary"]:
         with col_preview:
             st.info(f"**AI Executive Summary:**\n\n{st.session_state['report_summary']}")

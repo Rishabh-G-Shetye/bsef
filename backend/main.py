@@ -6,13 +6,16 @@ import io
 import base64
 import json
 
+# Import your modules
 from generator import generate_synthetic_ledger
 from model import AnomalyModel
 from llm_explainer import explain_anomalies, generate_batch_summary
 from data_ingestion import ingest_dataframe
 from pdf_generator import create_audit_pdf
 
+# --- THIS WAS LIKELY MISSING ---
 app = FastAPI()
+# -------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,6 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize the Hybrid Model
 model = AnomalyModel()
 
 
@@ -33,9 +37,13 @@ def get_scan_results(use_fake: bool = True, use_llm: bool = True):
         return {"error": "Use POST for real data"}
 
     try:
+        # 1. Ingest
         df = ingest_dataframe(df)
+
+        # 2. Detect (Stats + ML Isolation Forest)
         df = model.detect_anomalies(df)
 
+        # 3. Explain (LLM)
         if use_llm:
             df = explain_anomalies(df)
 
@@ -51,17 +59,22 @@ async def scan_uploaded_csv(file: UploadFile = File(...), use_llm: bool = True):
     content = await file.read()
     try:
         df = pd.read_csv(io.BytesIO(content))
+
+        # 1. Ingest
         df = ingest_dataframe(df)
+
+        # 2. Detect
         df = model.detect_anomalies(df)
+
+        # 3. Explain
         if use_llm:
             df = explain_anomalies(df)
+
         df = df.fillna("")
         return df.to_dict(orient="records")
     except Exception as e:
         return {"error": str(e)}
 
-
-# ... imports stay same ...
 
 @app.post("/generate_report")
 async def generate_report(request: Request):
@@ -77,16 +90,15 @@ async def generate_report(request: Request):
 
         df = pd.DataFrame(data)
 
-        # --- NEW: Calculate Metrics ---
+        # Calculate Metrics for PDF Header
         total_tx = len(df)
         risks_df = df[df["status"] == "Risk"]
         total_risk_val = risks_df["amount"].sum() if not risks_df.empty else 0
-        # -----------------------------
 
-        # 1. Generate LLM Summary (Only send risks to LLM to save tokens)
+        # 1. Generate LLM Summary (Only send risks to LLM)
         summary = generate_batch_summary(risks_df)
 
-        # 2. Generate PDF (Pass the new metrics!)
+        # 2. Generate PDF (Pass metrics)
         pdf_buffer = create_audit_pdf(risks_df, summary, total_tx, total_risk_val)
 
         pdf_base64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
