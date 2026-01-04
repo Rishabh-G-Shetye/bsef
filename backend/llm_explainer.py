@@ -8,75 +8,112 @@ from google.genai import types
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
+if API_KEY:
+    print(f"✅ API Key found: {API_KEY[:5]}******")
+else:
+    print("❌ API Key NOT found. Check .env file location.")
+
 client = genai.Client(api_key=API_KEY) if API_KEY else None
+
+FALLBACK_CHAIN = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash",
+    "gemma-3-12b",
+    "gemma-3-1b"
+]
+
+
+def _query_llm_with_fallback(prompt, response_mime_type="application/json"):
+    """Internal helper to run the fallback chain."""
+    if not client:
+        return None
+
+    for model_name in FALLBACK_CHAIN:
+        try:
+            print(f"🤖 Attempting {model_name}...")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type=response_mime_type,
+                    temperature=0.2
+                )
+            )
+            return response.text
+        except Exception as e:
+            print(f"⚠️ {model_name} failed: {e}")
+            continue
+    return None
+
+
+def generate_batch_summary(risk_rows: pd.DataFrame) -> str:
+    """
+    Generates a text summary and action plan for the entire dataset.
+    """
+    if risk_rows.empty:
+        return "No risks to summarize."
+
+    # Summarize data for prompt (limit to top 10 to save tokens)
+    top_risks = risk_rows.head(10).to_dict(orient="records")
+
+    prompt = f"""
+    You are a Lead Financial Auditor. 
+    Review these high-risk transactions: {top_risks}
+
+    Write an Executive Audit Summary (plain text, no markdown **bolding**).
+    Include:
+    1. A rundown of the key anomalies found.
+    2. Specific recommended actions (e.g., "Contact Vendor X immediately").
+    3. A professional closing statement.
+
+    Keep it concise (max 100 words).
+    """
+
+    response = _query_llm_with_fallback(prompt, response_mime_type="text/plain")
+    return response if response else "Audit summary generation failed."
 
 
 def batch_analyze_risks(risk_rows: pd.DataFrame) -> dict:
-    if client is None or risk_rows.empty:
+    """Row-by-row analysis returning JSON."""
+    if risk_rows.empty:
         return {}
 
+    transactions = []
+    for idx, row in risk_rows.iterrows():
+        transactions.append({
+            "id": str(idx),
+            "vendor": row.get("vendor"),
+            "amount": row.get("amount"),
+            "flag": row.get("anomaly_reason")
+        })
+
+    prompt = f"""
+    Analyze these transactions: {json.dumps(transactions)}
+    For EACH "id", return a JSON object: {{ "id": "Short explanation" }}
+    """
+
+    response = _query_llm_with_fallback(prompt, response_mime_type="application/json")
     try:
-        transactions = []
-        for idx, row in risk_rows.iterrows():
-            transactions.append({
-                "id": str(row["id"]),
-                "month": row["accounting_month"],
-                "vendor": row["vendor"],
-                "amount": float(row["amount"]),
-                "gl_code": row["gl_code"],
-                "technical_flag": row.get("anomaly_reason", "Statistical Outlier")
-            })
-
-        prompt = f"""
-        You are a Financial Controller. Review these flagged transactions.
-
-        INPUT DATA:
-        {json.dumps(transactions)}
-
-        TASK:
-        For EACH transaction ID, write a short, professional audit explanation (max 15 words).
-        Explain WHY this looks suspicious based on the data provided.
-
-        OUTPUT FORMAT:
-        Return ONLY valid JSON.
-        {{ "id_value": "explanation string" }}
-        """
-
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.2
-            )
-        )
-
-        return json.loads(response.text)
-
-    except Exception as e:
-        print(f"❌ Gemini Error: {e}")
+        return json.loads(response) if response else {}
+    except:
         return {}
 
 
 def explain_anomalies(df: pd.DataFrame) -> pd.DataFrame:
-    if "status" not in df.columns:
-        return df
+    """Enriches DataFrame with row-by-row explanations."""
+    df = df.copy()
+    if "status" not in df.columns: return df
 
-    risk_mask = df["status"] == "Risk"
-    risk_rows = df[risk_mask]
+    risk_rows = df[df["status"] == "Risk"]
+    if risk_rows.empty: return df
 
-    if risk_rows.empty:
-        return df
-
-    print(f"🤖 Asking Gemini to explain {len(risk_rows)} risks...")
+    print(f"🔍 Analyzing {len(risk_rows)} risks...")
     explanations = batch_analyze_risks(risk_rows)
 
     for idx, row in df.iterrows():
-        if row["status"] == "Risk":
-            row_id = str(row["id"])
-            if row_id in explanations:
-                existing = df.at[idx, "anomaly_reason"]
-                ai_text = explanations[row_id]
-                df.at[idx, "anomaly_reason"] = f"🤖 {ai_text} | (Tech: {existing})"
+        idx_str = str(idx)
+        if idx_str in explanations:
+            df.at[idx, "anomaly_reason"] = f"🤖 {explanations[idx_str]}"
 
     return df

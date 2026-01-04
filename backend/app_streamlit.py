@@ -1,27 +1,27 @@
 import streamlit as st
 import pandas as pd
 import requests
+import base64
 
 API_URL = "http://127.0.0.1:8001"
 
-st.set_page_config(
-    page_title="Month-End Auditor | PS04",
-    page_icon="🛡️",
-    layout="wide"
-)
-
-st.markdown("""
-<style>
-    .stApp { background-color: #0e1117; color: #FFFFFF; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="Month-End Auditor | PS04", page_icon="🛡️", layout="wide")
+st.markdown("""<style>.stApp { background-color: #0e1117; color: #FFFFFF; }</style>""", unsafe_allow_html=True)
 
 st.title("🛡️ AI Financial Auditor")
 st.markdown("### Month-End Close Exception Finder")
 
-# --- SIDEBAR ---
+# Session State for Report
+if "report_summary" not in st.session_state:
+    st.session_state["report_summary"] = ""
+if "report_pdf" not in st.session_state:
+    st.session_state["report_pdf"] = None
+
+# Clear button clears everything including report
 if st.sidebar.button("🧹 Clear/Reset App"):
     st.session_state["data"] = None
+    st.session_state["report_summary"] = ""
+    st.session_state["report_pdf"] = None
     st.rerun()
 
 if "data" not in st.session_state:
@@ -31,12 +31,13 @@ st.sidebar.header("Audit Controls")
 
 # Mode 1: Synthetic
 if st.sidebar.button("🚀 Generate & Scan Synthetic Ledger"):
-    with st.spinner("Analyzing Oct-Dec History vs Jan Current..."):
+    with st.spinner("Scanning..."):
         try:
             res = requests.get(f"{API_URL}/scan?use_fake=true&use_llm=true")
             if res.status_code == 200:
-                data = res.json()
-                st.session_state["data"] = pd.DataFrame(data)
+                st.session_state["data"] = pd.DataFrame(res.json())
+                st.session_state["report_summary"] = ""  # Reset report on new scan
+                st.session_state["report_pdf"] = None
                 st.success("Scan Complete")
             else:
                 st.error(f"Error: {res.text}")
@@ -47,30 +48,23 @@ if st.sidebar.button("🚀 Generate & Scan Synthetic Ledger"):
 uploaded = st.sidebar.file_uploader("Upload GL Export (CSV)")
 if uploaded:
     if st.sidebar.button("Scan Uploaded File"):
-        with st.spinner("Analyzing uploaded file..."):
+        with st.spinner("Scanning..."):
             files = {"file": uploaded}
             try:
                 res = requests.post(f"{API_URL}/scan?use_llm=true", files=files)
                 if res.status_code == 200:
                     st.session_state["data"] = pd.DataFrame(res.json())
+                    st.session_state["report_summary"] = ""
+                    st.session_state["report_pdf"] = None
                     st.success("Scan Complete")
-                else:
-                    st.error("Upload failed")
             except Exception as e:
                 st.error(f"Connection Failed: {e}")
 
-# --- MAIN DASHBOARD ---
 if st.session_state["data"] is not None:
     df = st.session_state["data"]
+    if "amount" in df.columns: df["amount"] = pd.to_numeric(df["amount"], errors='coerce')
 
-    if "amount" in df.columns:
-        df["amount"] = pd.to_numeric(df["amount"], errors='coerce')
-
-    # Filter only Risks (High and Medium)
-    risks = df[df["status"] == "Risk"].copy()
-
-    # Sort risks by Score Descending (Highest Priority first)
-    risks = risks.sort_values("risk_score", ascending=False)
+    risks = df[df["status"] == "Risk"].sort_values("risk_score", ascending=False)
 
     # Metrics
     c1, c2, c3 = st.columns(3)
@@ -81,39 +75,55 @@ if st.session_state["data"] is not None:
 
     st.divider()
 
+    # --- NEW: REPORT GENERATION SECTION ---
+    st.subheader("📄 Audit Reporting")
+    col_gen, col_preview = st.columns([1, 3])
+
+    with col_gen:
+        if st.button("📝 Draft Audit Report"):
+            with st.spinner("Consulting AI & Generating PDF..."):
+                try:
+                    # Send FULL dataframe (backend handles filtering)
+                    payload = {"data": df.to_dict(orient="records")}
+                    res = requests.post(f"{API_URL}/generate_report", json=payload)
+
+                    if res.status_code == 200:
+                        result = res.json()
+                        st.session_state["report_summary"] = result["summary"]
+                        st.session_state["report_pdf"] = result["pdf_base64"]
+                    else:
+                        st.error("Report generation failed.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    # Display Preview & Download if available
+    if st.session_state["report_summary"]:
+        with col_preview:
+            st.info(f"**AI Executive Summary:**\n\n{st.session_state['report_summary']}")
+
+        if st.session_state["report_pdf"]:
+            pdf_data = base64.b64decode(st.session_state["report_pdf"])
+            st.download_button(
+                label="📥 Download PDF Report",
+                data=pdf_data,
+                file_name="Audit_Exception_Report.pdf",
+                mime="application/pdf"
+            )
+
+    st.divider()
+
+    # Tables
     if not risks.empty:
         st.subheader("🚨 Priority Exception Queue")
-
-        # Format the table for display
         display_cols = ["severity", "risk_score", "vendor", "gl_code", "amount", "anomaly_reason"]
-
-        # Color code severity in the dataframe display is tricky,
-        # so we rely on the string column "severity" we created in model.py
-
-        st.dataframe(
-            risks[display_cols].style.format({
-                "amount": "${:,.2f}",
-                "risk_score": "{:.1%}"
-            }),
-            use_container_width=True
-        )
+        st.dataframe(risks[display_cols].style.format({"amount": "${:,.2f}", "risk_score": "{:.1%}"}),
+                     use_container_width=True)
 
         st.subheader("📝 Audit Assistant Findings")
         for _, row in risks.iterrows():
-            # Color emoji based on severity
             icon = "🔴" if row['severity'] == "High" else "🟡"
+            with st.expander(f"{icon} {row['severity']} Risk: {row.get('vendor')} - ${row.get('amount', 0):,.2f}"):
+                st.write(f"**Reason:** {row.get('anomaly_reason')}")
 
-            with st.expander(
-                    f"{icon} {row['severity']} Risk: {row.get('vendor', 'Unknown')} - ${row.get('amount', 0):,.2f}"):
-                st.markdown(f"**Reason:** {row.get('anomaly_reason', 'N/A')}")
-                st.markdown(f"**Risk Score:** {row.get('risk_score', 0) * 100:.1f}%")
-                st.markdown(f"**GL Code:** {row.get('gl_code', 'N/A')}")
-                st.markdown(f"**Month:** {row.get('accounting_month', 'N/A')}")
-
-    else:
-        st.success("✅ No material exceptions found in this dataset.")
-
-    with st.expander("View Full Ledger Data (Sorted by Risk)"):
-        # Sort full dataset by risk score so users see the 'almost' risks at the top
-        sorted_df = df.sort_values("risk_score", ascending=False)
-        st.dataframe(sorted_df, use_container_width=True)
+    with st.expander("View Full Ledger Data"):
+        st.dataframe(df.sort_values("risk_score", ascending=False), use_container_width=True)
