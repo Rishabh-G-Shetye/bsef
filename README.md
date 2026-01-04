@@ -1,4 +1,4 @@
-# 🛡️ AI Financial Auditor (PS04)
+# 🛡️ Month-End Close Exception Finder (PS04) by Black Swan Labs
 
 > **Month-End Close Exception Finder**
 >
